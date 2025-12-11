@@ -98,6 +98,38 @@ if st.session_state['draft_data']:
             except Exception as e:
                 st.error(f"Connection error: {e}")
 
+st.divider()
+st.subheader("🧠 AI Analyst (Chat with Data)")
+
+question = st.text_input("Ask a question about your finances",
+                         placeholder="Сколько я потратил на еду? / Show top 3 expensive items")
+
+# --- Ask ---
+if st.button("Ask AI"):
+    with st.spinner("Generating SQL..."):
+        try:
+            resp = httpx.post(f"{API_URL}/analytics/ask", json={"question": question}, timeout=30.0)
+
+            if resp.status_code == 200:
+                data = resp.json()
+
+                st.info(f"Generated SQL: `{data['sql']}`")  # Показываем SQL для отладки
+
+                results = data['result']
+                if results:
+                    st.dataframe(results)
+                    # Если результат - это агрегация (например, сумма), покажем крупно
+                    if len(results) == 1 and len(results[0]) == 1:
+                        key = list(results[0].keys())[0]
+                        st.metric(label="Result", value=results[0][key])
+                else:
+                    st.warning("No data found for this query.")
+            else:
+                st.error(f"Error: {resp.text}")
+
+        except Exception as e:
+            st.error(f"Connection error: {e}")
+
 # --- History ---
 st.divider()
 st.subheader("📚 History")

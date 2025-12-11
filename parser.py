@@ -2,6 +2,7 @@ import base64
 from openai import OpenAI
 import instructor
 from schemas import Transaction
+from pydantic import BaseModel, Field
 
 LLM_URL = "http://localhost:11434/v1"
 LLM_API_KEY = "ollama"
@@ -17,13 +18,71 @@ LLM_VISION_PROMPT = (
     "Return the result ONLY as a JSON object matching the schema."
 )
 
-openai_client = OpenAI(
-    base_url=LLM_URL,
-    api_key=LLM_API_KEY,
+DB_SCHEMA = (
+"""
+Table: transactions
+Columns:
+- id (integer)
+- amount (float)
+- currency (string, default 'UAH')
+- category (string) - values: food, transport, shopping, entertainment, bills, other
+- merchant (string)
+- description (string)
+- created_at (datetime)
+"""
 )
+
+LLM_SQL_PROMPT = (
+                    "You are a PostgreSQL expert. "
+                    f"Given the database schema:\n{DB_SCHEMA}\n"
+                    "Write a valid SQL query to answer the user's question. "
+                    "Return ONLY the raw SQL code. No markdown, no explanation. "
+                    "Always select all relevant columns or aggregates."
+                )
+
+openai_client = OpenAI(base_url=LLM_URL,api_key=LLM_API_KEY,)
 
 # Patch client. MD_JSON mode handles markdown code blocks common in LLM responses
 client = instructor.from_openai(openai_client, mode=instructor.Mode.MD_JSON)
+
+
+class SQLResponse(BaseModel):
+    sql: str = Field(...,
+                     description="The raw SQL query to answer the user's question. No markdown.")
+
+
+def generate_sql_query(user_question: str) -> str:
+    print(f"🤔 Thinking about SQL for: {user_question}")
+
+    # 2. Use the wrapper model
+    try:
+        response = client.chat.completions.create(
+            model=LLM_TEXT_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a PostgreSQL expert. "
+                        f"Schema:\n{DB_SCHEMA}\n"
+                        "Generate a valid SQL query to answer the question. "
+                        "Do not use markdown. Do not add explanations."
+                        "If asking for total/sum, use 'SELECT SUM(amount)...'."
+                    )
+                },
+                {"role": "user", "content": user_question},
+            ],
+            response_model=SQLResponse,  # <--- Force JSON structure { "sql": "..." }
+            max_retries=3
+        )
+
+        # 3. Extract the SQL string from the object
+        clean_sql = response.sql.strip().replace("```sql", "").replace("```", "")
+        return clean_sql
+
+    except Exception as e:
+        print(f"❌ SQL Generation Failed: {e}")
+        # Return a safe fallback or re-raise
+        return "SELECT * FROM transactions LIMIT 5;"
 
 def parse_expense(user_input: str) -> Transaction:
     print(f"Processing text with {LLM_TEXT_MODEL}: {user_input}...")

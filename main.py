@@ -5,6 +5,8 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy import text
+from parser import generate_sql_query
 
 from database import get_db
 from models import TransactionModel
@@ -90,3 +92,29 @@ async def save_transaction(
 async def get_transactions(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(TransactionModel).order_by(TransactionModel.id.desc()))
     return result.scalars().all()
+
+class QueryRequest(BaseModel):
+    question: str
+
+
+@app.post("/analytics/ask")
+async def ask_database(
+        request: QueryRequest,
+        db: AsyncSession = Depends(get_db)
+):
+    # sql generation
+    sql_query = await run_in_threadpool(generate_sql_query, request.question)
+    print(f"💻 Generated SQL: {sql_query}")
+
+    try:
+        # sql execution
+        result = await db.execute(text(sql_query))
+
+        # result mapping
+        rows = result.mappings().all()
+        return {
+            "sql": sql_query,
+            "result": rows
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"SQL Error: {str(e)}")
