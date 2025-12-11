@@ -8,9 +8,13 @@ dependencies = [
     "asyncpg>=0.31.0",
     "fastapi>=0.124.2",
     "greenlet>=3.3.0",
+    "httpx>=0.28.1",
     "instructor>=1.13.0",
     "openai>=2.11.0",
+    "pandas>=2.3.3",
     "pydantic>=2.12.5",
+    "python-multipart>=0.0.20",
     "sqlalchemy>=2.0.45",
+    "streamlit>=1.52.1",
     "uvicorn>=0.38.0",
 ]

@@ -1,4 +1,7 @@
-from fastapi import FastAPI, HTTPException, Depends
+import os
+import shutil
+from fastapi import FastAPI, HTTPException, Depends, UploadFile, File
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -6,7 +9,7 @@ from sqlalchemy import select
 # locally imports
 from database import get_db
 from models import TransactionModel
-from parser import parse_expense
+from parser import parse_expense, parse_receipt_image
 from schemas import Transaction as TransactionSchema
 
 app = FastAPI(title="SmartWallet AI")
@@ -17,39 +20,75 @@ class TransactionRequest(BaseModel):
     text: str
 
 
-# create transaction
-@app.post("/transactions/", response_model=TransactionSchema)
-async def create_transaction(
-        request: TransactionRequest,
-        db: AsyncSession = Depends(get_db)  # Dependency Injection сессии БД
-):
-    print(f"📩 Request text: {request.text}")
-
-    try:
-        # NOTE: parse_expense should be replaced with async
-        parsed_data = parse_expense(request.text)
-        print(f"🤖 Parsed data: {parsed_data}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"AI Error: {str(e)}")
-    # save into DB
+async def save_transaction_to_db(data: TransactionSchema, db: AsyncSession):
+    # Map Pydantic schema to SQLAlchemy model
     db_transaction = TransactionModel(
-        amount=parsed_data.amount,
-        currency=parsed_data.currency,
-        category=parsed_data.category.value,
-        description=parsed_data.description,
-        merchant=parsed_data.merchant
+        amount=data.amount,
+        currency=data.currency,
+        category=data.category.value,
+        description=data.description,
+        merchant=data.merchant
     )
-
     db.add(db_transaction)
     await db.commit()
     await db.refresh(db_transaction)
+    return db_transaction
 
-    return parsed_data
+
+# endpoints
+
+@app.post("/transactions/text", response_model=TransactionSchema)
+async def create_transaction_text(
+        request: TransactionRequest,
+        db: AsyncSession = Depends(get_db)
+):
+    print(f"📩 Text received: {request.text}")
+
+    try:
+        # Run blocking sync function in a separate thread
+        parsed_data = await run_in_threadpool(parse_expense, request.text)
+        print(f"🤖 AI Result: {parsed_data}")
+
+        await save_transaction_to_db(parsed_data, db)
+        return parsed_data
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"AI Error: {str(e)}")
 
 
-# 3. read transactions
+@app.post("/transactions/image", response_model=TransactionSchema)
+async def create_transaction_image(
+        file: UploadFile = File(...),
+        db: AsyncSession = Depends(get_db)
+):
+    print(f"📩 Image received: {file.filename}")
+
+    # Save uploaded file temporarily because parser needs a path
+    temp_filename = f"temp_{file.filename}"
+
+    try:
+        # Write file to disk
+        with open(temp_filename, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+
+        # Run vision model in threadpool to avoid blocking event loop
+        parsed_data = await run_in_threadpool(parse_receipt_image, temp_filename)
+        print(f"🤖 Vision Result: {parsed_data}")
+
+        await save_transaction_to_db(parsed_data, db)
+        return parsed_data
+
+    except Exception as e:
+        print(f"Error: {e}")
+        raise HTTPException(status_code=500, detail=f"Vision Error: {str(e)}")
+
+    finally:
+        # Cleanup: remove temp file even if error occurred
+        if os.path.exists(temp_filename):
+            os.remove(temp_filename)
+
+
 @app.get("/transactions/")
 async def get_transactions(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(TransactionModel).order_by(TransactionModel.id.desc()))
-    transactions = result.scalars().all()
-    return transactions
+    return result.scalars().all()
